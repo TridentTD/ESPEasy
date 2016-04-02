@@ -795,48 +795,6 @@ int SpiffsSectors()
 
 
 /********************************************************************************************\
-  Check flash chip (beyond sketch size)
-  \*********************************************************************************************/
-void CheckFlash(int start, int end)
-{
-  //uint32_t _sectorStart = (ESP.getSketchSize() / SPI_FLASH_SEC_SIZE) + 1;
-  //uint32_t _sectorEnd = _sectorStart + (ESP.getFlashChipRealSize() / SPI_FLASH_SEC_SIZE);
-
-  uint32_t _sectorStart = start;
-  uint32_t _sectorEnd = end;
-
-  uint8_t* data = new uint8_t[FLASH_EEPROM_SIZE];
-
-  uint8_t* tmpdata = data;
-  for (int x = 0; x < FLASH_EEPROM_SIZE; x++)
-  {
-    *tmpdata = 0xA5;
-    tmpdata++;
-  }
-
-  for (uint32_t _sector = _sectorStart; _sector < _sectorEnd; _sector++)
-  {
-    boolean success = 0;
-    Serial.print(F("FLASH: Verify Sector: "));
-    Serial.print(_sector);
-    Serial.print(F(" : "));
-    delay(10);
-    noInterrupts();
-    //if (spi_flash_erase_sector(_sector) == SPI_FLASH_RESULT_OK)
-    //if (spi_flash_write(_sector * SPI_FLASH_SEC_SIZE, reinterpret_cast<uint32_t*>(data), FLASH_EEPROM_SIZE) == SPI_FLASH_RESULT_OK)
-    if (spi_flash_read(_sector * SPI_FLASH_SEC_SIZE, reinterpret_cast<uint32_t*>(data), FLASH_EEPROM_SIZE) == SPI_FLASH_RESULT_OK)
-      success = true;
-    interrupts();
-    if (success)
-      Serial.println(F("OK"));
-    else
-      Serial.println(F("Fail"));
-  }
-  delete [] data;
-}
-
-
-/********************************************************************************************\
   Reset all settings to factory defaults
   \*********************************************************************************************/
 void ResetFactory(void)
@@ -895,6 +853,7 @@ void ResetFactory(void)
   Settings.Delay           = DEFAULT_DELAY;
   Settings.Pin_i2c_sda     = 4;
   Settings.Pin_i2c_scl     = 5;
+  Settings.Pin_status_led  = -1;
   Settings.Protocol        = DEFAULT_PROTOCOL;
   strcpy_P(Settings.Name, PSTR(DEFAULT_NAME));
   Settings.SerialLogLevel  = 2;
@@ -948,10 +907,6 @@ void emergencyReset()
 /********************************************************************************************\
   Get free system mem
   \*********************************************************************************************/
-extern "C" {
-#include "user_interface.h"
-}
-
 unsigned long FreeMem(void)
 {
   return system_get_free_heap_size();
@@ -1065,13 +1020,14 @@ unsigned long string2TimeLong(String &str)
   char TmpStr1[10];
   int w, x, y;
   unsigned long a;
+  str.toLowerCase();
   str.toCharArray(command, 20);
   unsigned long lngTime;
 
   if (GetArgv(command, TmpStr1, 1))
   {
     String day = TmpStr1;
-    String weekDays = F("AllSunMonTueWedThuFriSat");
+    String weekDays = F("allsunmontuewedthufrisat");
     y = weekDays.indexOf(TmpStr1) / 3;
     if (y == 0)
       y = 0xf; // wildcard is 0xf
@@ -1772,6 +1728,10 @@ void rulesProcessing(String& event)
       {
         isCommand = true;
 
+        int comment = line.indexOf("//");
+        if (comment > 0)
+          line = line.substring(0, comment);
+          
         line = parseTemplate(line, line.length());
 
         String eventTrigger = "";
@@ -1870,6 +1830,39 @@ boolean ruleMatch(String& event, String& rule)
   boolean match = false;
   String tmpEvent = event;
   String tmpRule = rule;
+
+  if (event.startsWith("Clock#Time")) // clock events need different handling...
+  {
+    int pos1 = event.indexOf("=");
+    int pos2 = rule.indexOf("=");
+    if (pos1 > 0 && pos2 > 0)
+    {
+      tmpEvent = event.substring(0,pos1);
+      tmpRule  = rule.substring(0,pos2);
+      if (tmpRule.equalsIgnoreCase(tmpEvent)) // if this is a clock rule
+      { 
+        tmpEvent = event.substring(pos1 + 1);
+        tmpRule  = rule.substring(pos2 + 1);
+        unsigned long clockEvent = string2TimeLong(tmpEvent);
+        unsigned long clockSet = string2TimeLong(tmpRule);
+        unsigned long Mask;
+        for (byte y = 0; y < 8; y++)
+          {
+          if (((clockSet >> (y * 4)) & 0xf) == 0xf)  // if nibble y has the wildcard value 0xf
+            {
+              Mask = 0xffffffff  ^ (0xFUL << (y * 4)); // Mask to wipe nibble position y.
+              clockEvent &= Mask;                      // clear nibble
+              clockEvent |= (0xFUL << (y * 4));        // fill with wildcard value 0xf
+            }
+          }
+        if (clockEvent == clockSet)
+          return true;
+        else
+          return false;
+      }
+    }
+  }
+
 
   // parse event into verb and value
   float value = 0;
